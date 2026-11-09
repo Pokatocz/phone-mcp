@@ -41,31 +41,51 @@ Install Termux from [F-Droid](https://f-droid.org/packages/com.termux/) or
 
 ### 2. Get the code and install
 
-In Termux:
+In Termux (long-press the screen and choose *Paste* to paste a command, then press Enter):
 
 ```sh
 pkg install -y git
 git clone https://github.com/Pokatocz/phone-mcp ~/phone-mcp
 bash ~/phone-mcp/install.sh
+termux-setup-storage
 ```
 
-The installer adds Python, ADB and OpenSSH, and writes `config.env` with a random secret token.
+The installer takes a few minutes. It adds Python, ADB and OpenSSH, and writes `config.env` with a random
+secret token. If it stops at a question, press Enter. The last command asks for access to your files; allow it
+(it is needed to install the optional keyboard from your Downloads folder).
+
+**You should see:** `Done. Next: turn on Wireless debugging and run ...`
 
 ### 3. Connect ADB to the phone itself
 
 1. Enable Developer options: *Settings > About phone*, tap *Build number* seven times
-   (Xiaomi: *OS version*; Samsung: *Software information > Build number*).
-2. Open *Developer options > Wireless debugging* and turn it on.
-3. Put Termux and Settings side by side (split screen). The pairing dialog closes when you switch apps.
-4. Run:
+   (Xiaomi: *OS version*; Samsung: *Software information > Build number*). A new *Developer options* menu
+   appears in Settings (on some phones under *System* or *Additional settings*).
+2. Connect to Wi-Fi, open *Developer options > Wireless debugging* (tap the text, not only the switch) and
+   turn it on.
+3. Put Termux and Settings side by side: open the recent-apps screen, tap the Termux icon (or long-press its
+   card) and choose *Split screen*, then pick Settings. This matters because the pairing dialog closes as soon
+   as you switch apps.
+4. In Termux run:
 
 ```sh
 bash ~/phone-mcp/pair.sh
 ```
 
-The script asks for the pairing port and code (first time only) and for the connection port. It tries to detect
-the ports by itself. If the phone asks *Allow debugging?*, choose *Always allow*. The script then moves ADB to
-the fixed port 5555 and tells Android not to kill Termux in the background.
+Wireless debugging shows **two different ports**, and the script asks for both:
+
+| The script asks for | Where to find it |
+| --- | --- |
+| Pairing port and six-digit code (first time only) | Tap *Pair device with pairing code*. A dialog shows the code and an address like `192.168.1.23:37215`. Type the number after the colon. |
+| Connection port | The main Wireless debugging screen, under *IP address & Port*, e.g. `192.168.1.23:41567`. Again the number after the colon. |
+
+The script tries to detect the ports by itself and only asks when it cannot. If the phone asks
+*Allow debugging?*, choose *Always allow*. The script then moves ADB to the fixed port 5555 and tells Android
+not to kill Termux in the background.
+
+**You should see:** `ADB connected: localhost:5555` and `Done. Start the server: ...`
+
+Pairing is needed only once. The connection port changes every time Wireless debugging is turned on.
 
 **Xiaomi / Redmi / POCO:** also enable *USB debugging (Security settings)* in Developer options, otherwise taps and
 typing are rejected, and *Install via USB* if you want the script to install ADBKeyBoard.
@@ -87,15 +107,25 @@ Give Termux unrestricted battery use (*Settings > Apps > Termux > Battery > Unre
 bash ~/phone-mcp/start.sh
 ```
 
-It prints the **connector URL**, `https://.../<token>/mcp`. Without a relay this is a temporary
-[localhost.run](https://localhost.run) address that changes on every start. That is fine for a first try;
-for daily use set up the permanent URL below.
+**You should see** `=== Running ===` followed by the **connector URL**, `https://.../<token>/mcp`.
+To copy it, long-press in Termux and choose *More > Select URL*; `cat ~/phone-mcp/connector-url.txt` prints it
+again. To check that everything is up, open the URL in a browser with `/health` in place of `/mcp`; it should
+show `{"ok": true, "adb": "device", ...}`.
+
+Without a relay this is a temporary [localhost.run](https://localhost.run) address that changes on every start.
+That is fine for a first try; for daily use set up the permanent URL below.
 
 ### 7. Add the connector to Claude
 
-On [claude.ai](https://claude.ai), open the connector settings, add a **custom connector**, paste the URL and choose
-no authentication (the token in the URL is the key). In the tool permissions, allow the tools you are comfortable
-with and keep `shell` and `batch` on *needs approval*. Then enable the connector in a chat and try:
+Custom connectors are added on the claude.ai website (a phone browser works), not inside the mobile app.
+Once added, the connector is available in the apps too.
+
+1. Open [claude.ai/customize/connectors](https://claude.ai/customize/connectors).
+2. Choose **Add** > **Add custom connector**, give it a name such as `Phone` and paste the connector URL.
+3. When asked about authentication, choose **No sign in**. The token in the URL is the key.
+4. Open the new connector's tool permissions. Allow the tools you are comfortable with and keep `shell` and
+   `batch` on *Needs approval*.
+5. Start a **new** chat, enable the connector there (the **+** button > *Connectors*) and try:
 
 - "What's the state of my phone?"
 - "Read my notifications."
@@ -103,13 +133,16 @@ with and keep `shell` and `batch` on *needs approval*. Then enable the connector
 
 ## Permanent URL
 
-Deploy the Worker once from a computer:
+Deploy the Worker once from a computer with [Node.js](https://nodejs.org) installed. Get the code there
+(`git clone https://github.com/Pokatocz/phone-mcp`, or *Code > Download ZIP* on GitHub), open a terminal in the
+`relay` folder and run:
 
 ```sh
-cd relay
 npx wrangler login
 npx wrangler deploy
 ```
+
+The first command opens a browser to sign in to Cloudflare (a free account is enough).
 
 On Windows PowerShell use `npx.cmd` instead of `npx`. The deploy prints a URL like
 `https://phone-mcp-relay.NAME.workers.dev`. On the phone:
@@ -130,7 +163,8 @@ itself when it moves between Wi-Fi and mobile data. The Worker fits in Cloudflar
 | Not using it | `bash ~/phone-mcp/stop.sh` |
 | Use it again | `bash ~/phone-mcp/start.sh` |
 | Phone rebooted | Turn on Wireless debugging, then `bash ~/phone-mcp/pair.sh && bash ~/phone-mcp/start.sh` (press Enter at the pairing question) |
-| Updated the code | `git pull && bash ~/phone-mcp/restart-server.sh` |
+| Update to a new version | `cd ~/phone-mcp && git pull && bash restart-server.sh` (the URL stays the same) |
+| Remove everything | `bash ~/phone-mcp/stop.sh`, delete the connector in Claude, `rm -rf ~/phone-mcp`, turn Wireless debugging off |
 | The URL leaked | `bash ~/phone-mcp/new-token.sh`, start again, re-add the connector |
 
 Android turns Wireless debugging off on reboot, so the pairing script has to run again after each reboot.
