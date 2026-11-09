@@ -1,0 +1,10 @@
+# Secrets and runtime files - never commit these
+config.env
+connector-url.txt
+*.log
+*.pid
+*.tmp
+
+__pycache__/
+node_modules/
+.wrangler/
