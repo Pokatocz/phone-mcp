@@ -8,3 +8,7 @@ connector-url.txt
 __pycache__/
 node_modules/
 .wrangler/
+
+# Helper build leftovers - the built jar itself is checked in
+helper/build/
+.tools/
