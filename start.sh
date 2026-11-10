@@ -21,9 +21,15 @@ done
 
 # 1) ADB
 adb start-server >/dev/null 2>&1
-adb -s "$SERIAL" get-state 2>/dev/null | grep -q '^device' || { adb connect "$SERIAL" >/dev/null 2>&1; sleep 1; }
-if ! adb -s "$SERIAL" get-state 2>/dev/null | grep -q '^device'; then
-  echo "!! ADB is not connected. Turn on Wireless debugging and run: bash $DIR/pair.sh"
+connected() { adb -s "$SERIAL" get-state 2>/dev/null | grep -q '^device'; }
+connected || { adb connect "$SERIAL" >/dev/null 2>&1; sleep 1; }
+if ! connected; then
+  # Typically after a phone reboot. pair.sh --auto reconnects when it can do so without questions.
+  echo "ADB is not connected, trying to reconnect..."
+  bash "$DIR/pair.sh" --auto
+fi
+if ! connected; then
+  echo "!! ADB is not connected. Turn on Wireless debugging (Settings > Developer options) and run: bash $DIR/pair.sh"
   exit 1
 fi
 
@@ -33,7 +39,7 @@ nohup python "$DIR/phone_mcp.py" >> "$DIR/server.log" 2>&1 &
 echo $! > "$DIR/server.pid"
 STARTED=""
 for _ in $(seq 1 20); do
-  curl -fsS "http://127.0.0.1:$PORT/$PHONE_MCP_TOKEN/health" >/dev/null 2>&1 && { STARTED=1; break; }
+  curl -fsS --max-time 3 "http://127.0.0.1:$PORT/$PHONE_MCP_TOKEN/health" >/dev/null 2>&1 && { STARTED=1; break; }
   sleep 0.5
 done
 [ -n "$STARTED" ] || { echo "!! The server did not start:"; tail -n 20 "$DIR/server.log"; exit 1; }
@@ -61,10 +67,10 @@ else
 fi
 
 # 4) Check from the outside (a new address can take a few seconds to resolve)
-echo "Checking the public URL..."
+echo "Checking the public URL (up to a minute)..."
 OK=""
 for _ in $(seq 1 20); do
-  curl -fsS "$URL/$PHONE_MCP_TOKEN/health" >/dev/null 2>&1 && { OK=1; break; }
+  curl -fsS --max-time 8 "$URL/$PHONE_MCP_TOKEN/health" >/dev/null 2>&1 && { OK=1; break; }
   sleep 2
 done
 

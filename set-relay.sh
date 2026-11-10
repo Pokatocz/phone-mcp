@@ -17,7 +17,7 @@ fi
 sed -i '/^PHONE_MCP_RELAY_URL=/d' "$CFG"
 echo "PHONE_MCP_RELAY_URL=$URL" >> "$CFG"
 if [ -n "$URL" ]; then
-  if curl -fsS "$URL/" 2>/dev/null | grep -qi "relay"; then
+  if curl -fsS --max-time 10 "$URL/" 2>/dev/null | grep -qi "relay"; then
     echo "The relay answers: $URL"
   else
     echo "!! No relay answers at $URL yet - check the URL printed by \"wrangler deploy\"."

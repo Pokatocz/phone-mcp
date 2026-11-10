@@ -6,7 +6,9 @@ The server runs **on the phone itself**, so no computer is involved. You type a 
 - No root. No PC after setup. No extra app to trust besides [Termux](https://termux.dev).
 - Works as a **custom connector** in claude.ai and the Claude mobile apps (remote MCP, Streamable HTTP).
 - Free **permanent URL** through a tiny Cloudflare Worker, so the connector keeps working across restarts and network changes.
-- One Python file, standard library only (Pillow is optional and makes screenshots smaller and faster).
+- Fast: a 10 KB helper on the phone reads the screen in well under 0.1 s (plain ADB commands need 2-4 s),
+  and types any language, emoji included.
+- One Python file, standard library only.
 
 ```
 Claude app -> Anthropic servers -> relay (Cloudflare Worker) -> Termux on the phone -> ADB -> the phone's screen
@@ -18,8 +20,13 @@ Claude app -> Anthropic servers -> relay (Cloudflare Worker) -> Termux on the ph
 ## How it works
 
 Android's *Wireless debugging* lets ADB connect over the network. Termux connects ADB to `localhost`, which gives a
-shell with the same powers as a computer plugged in over USB: `input tap`, `uiautomator dump`, `screencap`, `am start`.
-`phone_mcp.py` wraps those commands as MCP tools.
+shell with the same powers as a computer plugged in over USB. `phone_mcp.py` wraps that shell as MCP tools.
+
+Reading the screen with the stock commands is slow, because every `uiautomator dump` or `screencap` starts a new
+process and waits a fixed second or more. So the server starts one small Java program on the phone
+(`helper/`, run with `app_process` as the shell user, nothing is installed) that keeps a connection to Android's
+accessibility layer open and answers in milliseconds. If the helper cannot run on a phone, the server falls back
+to the stock commands by itself; `phone_status` tells which mode is active.
 
 Claude's connectors need a public HTTPS URL. `bridge.py` opens an outbound WebSocket from the phone to a Cloudflare
 Worker (`relay/`), and the Worker forwards Claude's requests through it. Nothing listens on the phone for the
@@ -51,8 +58,8 @@ termux-setup-storage
 ```
 
 The installer takes a few minutes. It adds Python, ADB and OpenSSH, and writes `config.env` with a random
-secret token. If it stops at a question, press Enter. The last command asks for access to your files; allow it
-(it is needed to install the optional keyboard from your Downloads folder).
+secret token. If it stops at a question, press Enter. The last command asks for access to your files; it is
+only needed if you later want the optional fallback keyboard (step 4), so you may skip it.
 
 **You should see:** `Done. Next: turn on Wireless debugging and run ...`
 
@@ -79,22 +86,24 @@ Wireless debugging shows **two different ports**, and the script asks for both:
 | Pairing port and six-digit code (first time only) | Tap *Pair device with pairing code*. A dialog shows the code and an address like `192.168.1.23:37215`. Type the number after the colon. |
 | Connection port | The main Wireless debugging screen, under *IP address & Port*, e.g. `192.168.1.23:41567`. Again the number after the colon. |
 
-The script tries to detect the ports by itself and only asks when it cannot. If the phone asks
-*Allow debugging?*, choose *Always allow*. The script then moves ADB to the fixed port 5555 and tells Android
-not to kill Termux in the background.
+The script tries to find the connection port by itself and only asks when it cannot. If the phone asks
+*Allow debugging?*, choose *Always allow*. The script then moves ADB to the fixed port 5555, tells Android
+not to kill Termux in the background, and allows Termux to turn Wireless debugging back on after a reboot.
 
 **You should see:** `ADB connected: localhost:5555` and `Done. Start the server: ...`
 
 Pairing is needed only once. The connection port changes every time Wireless debugging is turned on.
 
 **Xiaomi / Redmi / POCO:** also enable *USB debugging (Security settings)* in Developer options, otherwise taps and
-typing are rejected, and *Install via USB* if you want the script to install ADBKeyBoard.
+typing are rejected.
 
-### 4. Unicode typing (optional, recommended)
+### 4. Fallback keyboard (optional)
 
-Plain `input text` only types ASCII. For accented letters, non-Latin scripts and emoji, download the
-[ADBKeyBoard](https://github.com/senzhk/ADBKeyBoard/releases) APK to your Downloads folder and run `pair.sh` again;
-it installs the APK. The server switches to that keyboard only while it types and then restores yours.
+Accented letters, non-Latin scripts and emoji are typed through the accessibility layer and need nothing extra.
+A few apps draw their own text fields and refuse that. For those you can add
+[ADBKeyBoard](https://github.com/senzhk/ADBKeyBoard/releases): download the APK to your Downloads folder and run
+`pair.sh` again (on Xiaomi enable *Install via USB* first). The server switches to that keyboard only while it
+types and then restores yours.
 
 ### 5. Battery settings
 
@@ -162,35 +171,53 @@ itself when it moves between Wi-Fi and mobile data. The Worker fits in Cloudflar
 | --- | --- |
 | Not using it | `bash ~/phone-mcp/stop.sh` |
 | Use it again | `bash ~/phone-mcp/start.sh` |
-| Phone rebooted | Turn on Wireless debugging, then `bash ~/phone-mcp/pair.sh && bash ~/phone-mcp/start.sh` (press Enter at the pairing question) |
-| Update to a new version | `cd ~/phone-mcp && git pull && bash restart-server.sh` (the URL stays the same) |
+| Phone rebooted | Connect to Wi-Fi and run `bash ~/phone-mcp/start.sh`. If it reports that ADB is not connected, turn on Wireless debugging and run `bash ~/phone-mcp/pair.sh && bash ~/phone-mcp/start.sh` |
+| Update to a new version | `cd ~/phone-mcp && git pull && bash restart-server.sh` (the URL stays the same), then press *Reconnect* on the connector in Claude so it sees new tools |
 | Remove everything | `bash ~/phone-mcp/stop.sh`, delete the connector in Claude, `rm -rf ~/phone-mcp`, turn Wireless debugging off |
 | The URL leaked | `bash ~/phone-mcp/new-token.sh`, start again, re-add the connector |
 
-Android turns Wireless debugging off on reboot, so the pairing script has to run again after each reboot.
-Leaving Termux is fine; closing it (`exit`, swiping it away) stops the server.
+Android turns Wireless debugging off on reboot. `start.sh` tries to turn it back on and reconnect without
+questions (experimental: it needs Wi-Fi and does not work on every phone); when that fails, do it by hand as in
+the table. Pairing again is not needed. Leaving Termux is fine; closing it (`exit`, swiping it away) stops the
+server.
 
 ## Tools
 
 | Tool | What it does |
 | --- | --- |
-| `phone_status` | Screen on/off, lock state, foreground app, battery, display size |
-| `ui_tree` | The screen as a numbered list of elements with coordinates (2-4 s) |
-| `screenshot` | A downscaled JPEG of the screen (about 0.5 s) |
-| `tap`, `tap_element`, `tap_text` | Tap coordinates, an element from `ui_tree`, or an element found by text |
-| `swipe`, `scroll` | Drag between two points; scroll the content |
-| `type_text` | Type into the focused field |
+| `phone_status` | Screen on/off, lock state, foreground app, battery, Wi-Fi/Bluetooth/airplane/do-not-disturb, display size |
+| `ui_tree` | The screen as a numbered list of elements with coordinates |
+| `read_text` | All text on the screen, unshortened (messages, articles) |
+| `screenshot` | A JPEG of the screen, or of one `region` in full detail |
+| `tap`, `tap_element`, `tap_text` | Tap coordinates, an element from `ui_tree`, or an element found by text (case and accents ignored) |
+| `swipe`, `scroll` | Drag or fling between two points; scroll by an exact part of the screen, without a fling, so nothing is skipped |
+| `scroll_to_text` | Scroll until a text is on screen, stopping at the end of the list |
+| `type_text` | Type into the focused field, any language |
 | `press_key` | Back, home, recents, volume, media keys, notification shade, quick settings |
-| `open_app`, `list_apps` | Launch an app by name or package; list installed packages |
+| `open_app`, `close_app`, `list_apps` | Launch or force-stop an app by name or package; list installed packages |
 | `open_url` | Open a web page or deep link (`tel:`, `sms:`, `geo:`, ...) |
 | `notifications` | Read current notifications |
+| `clipboard_get`, `clipboard_set` | Read or set the clipboard |
+| `set_setting` | Wi-Fi, Bluetooth, mobile data, airplane mode, do not disturb, dark mode, auto-rotate, brightness, media volume; reports what the phone really did |
 | `wait` | Sleep, or wait until a text appears |
 | `shell` | Any command in the ADB shell |
 | `batch` | Several tool calls in one request |
 
-Two things keep it fast. Action tools take `observe: true` and then return the new screen in the same call, and
-`batch` runs a known sequence (say, four keypad taps) in one round trip instead of four. Each round trip through
-the model costs far more time than the tap itself.
+### Speed
+
+Measured on the test phone:
+
+| | Stock ADB commands | With the helper |
+| --- | --- | --- |
+| Read the screen (`ui_tree`, `read_text`) | 2.2-4.0 s | 0.03-0.1 s |
+| Screenshot, 720 px JPEG | about 0.6 s | about 0.08 s |
+| Tap, key press | 0.06 s | a few ms |
+
+Before it reads the screen, the helper waits until window animations (a page sliding in) have finished, so the
+coordinates it returns are final; that adds a few tenths of a second right after a tap. The helper needs about
+1.5 s for its first answer and exits after two idle minutes, so the first call after a pause is slower. What still dominates is the model: every tool call is a round trip through Claude. Three things
+cut round trips. Action tools take `observe: true` and return the new screen in the same call, `batch` runs a
+known sequence (say, four keypad taps) in one call, and `scroll_to_text` replaces a scroll-and-look loop.
 
 ## Security
 
@@ -200,7 +227,15 @@ the model costs far more time than the tap itself.
 - The token is 256 bits of randomness, compared in constant time, and never written to the logs.
 - The relay stores nothing. It routes by a hash of the token, and the phone checks the token again.
 - Stop the server when you do not need it. `new-token.sh` invalidates an old URL at once.
-- Every action is appended to `actions.log` (typed text is recorded as a length only).
+- Every action is appended to `actions.log` (typed and copied text is recorded as a length only).
+- `clipboard_get` returns whatever was copied last, which may be a password. Keep it on *needs approval*.
+- While the helper runs, Android has an accessibility ("UI automation") connection open for the shell user. It
+  is the same mechanism `uiautomator` uses, it is started only by the server, and it closes after two idle
+  minutes. A few apps behave differently while any accessibility service is active. `PHONE_MCP_HELPER=0` in
+  `config.env` turns the helper off.
+- `pair.sh` grants Termux the `WRITE_SECURE_SETTINGS` permission, used only to turn Wireless debugging back on
+  after a reboot. Revoke it with `adb shell pm revoke com.termux android.permission.WRITE_SECURE_SETTINGS` if you
+  prefer to do that step by hand.
 - The model is instructed to ask before sending, buying, deleting or changing settings, and never to type
   credentials. That is an instruction, not a guarantee. Keep risky tools on *needs approval* in Claude.
 - Web pages, messages and notifications that Claude reads on the phone can contain text written to manipulate it
@@ -219,10 +254,13 @@ the model costs far more time than the tap itself.
 | `pair.sh`: "Could not connect on port ..." | The port changes whenever Wireless debugging is turned on. Read it again from the main Wireless debugging screen, not from the pairing dialog. |
 | `SecurityException ... INJECT_EVENTS` (Xiaomi) | Enable *USB debugging (Security settings)*. |
 | `[Process completed (signal 9)]` in Termux | Android killed Termux. Check the battery settings, run `pair.sh` and `start.sh` again. |
-| Text is typed without accents | Install ADBKeyBoard (step 4). |
+| Typing fails with "no focused field" | Tap the text field first. If the app still refuses non-English text, install ADBKeyBoard (step 4). |
+| Everything takes seconds; `phone_status` says "fast helper off" | The helper could not start on this phone. `server.log` has the reason; please report it. The server keeps working with the stock commands (install `python-pillow` for smaller screenshots). |
+| Claude does not see the new tools after an update | Press *Reconnect* on the connector, or remove and add it again. |
 | Black screenshot | The screen is off, or the app blocks screenshots. |
 | An element cannot be found | Games, maps and web views expose no UI tree. Ask Claude to use a screenshot. |
 | Relay health shows `"phone": "disconnected"` | `bridge.py` is not running or has no network. Run `start.sh`; check `bridge.log`. |
+| `start.sh` says the public URL does not answer, relay health returns `503` although `bridge.log` shows `connected` | A relay deployed before version 1.2.2 can keep sending requests to an old, dead connection. Deploy the current `relay/worker.js` (see [relay/README.md](relay/README.md#update)). Until then, `new-token.sh` + `start.sh` gets a clean connection (add the new URL to Claude). |
 
 Logs live in `~/phone-mcp`: `server.log` (requests, no secrets), `bridge.log`, `tunnel.log`, `actions.log`.
 `https://<your-url>/<token>/health` shows whether the server and ADB are up.
@@ -233,14 +271,22 @@ Logs live in `~/phone-mcp`: `server.log` (requests, no secrets), `bridge.log`, `
 python3 tests/run_tests.py
 ```
 
-runs the server against a fake `adb` and checks the protocol, every tool and the fallbacks. No phone needed.
+runs the server against a fake `adb` (which also plays the helper) and checks the protocol, every tool on both
+the helper path and the stock-command path, the fallbacks and the reconnect script. No phone needed.
+
+The helper is a single Java file, `helper/src/PhoneMcpHelper.java`. The built `helper/phone-mcp-helper.jar` is
+checked in so that the phone needs no build tools; `bash helper/build.sh` rebuilds it on a computer with a JDK
+(it downloads Google's D8 compiler and `android.jar`). The server copies the jar to `/data/local/tmp` on the
+phone when it changes.
 
 Configuration lives in `config.env`; the variables are documented at the top of `phone_mcp.py`.
 
 ## Limitations
 
-- `ui_tree` relies on `uiautomator dump`, which waits for the screen to settle: 2-4 s, longer on animated screens.
-- Wireless debugging must be re-enabled after every reboot.
+- The helper uses Android interfaces that are not part of the public SDK. It is written to fail safely (the
+  server then uses the stock commands), but a future Android version may need an update.
+- Games, maps and most web content expose little or no UI tree; Claude has to work from screenshots there.
+- Wireless debugging goes off on every reboot; turning it back on automatically is experimental.
 - A PIN-locked phone cannot be unlocked by the server.
 - The temporary localhost.run tunnel drops now and then; the relay does not have this problem.
 

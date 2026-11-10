@@ -6,7 +6,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "== 1/3 Updating Termux and installing packages (a few minutes) =="
 yes | pkg upgrade -y
 pkg install -y python android-tools openssh curl
-pkg install -y python-pillow || echo "!! Pillow could not be installed - screenshots will be larger and slower (PNG); everything else works."
+pkg install -y python-pillow || echo "!! Pillow could not be installed - it is only needed when the fast helper cannot run on this phone."
 
 echo "== 2/3 Configuration =="
 if [ ! -f "$DIR/config.env" ] || ! grep -q '^PHONE_MCP_TOKEN=.\+' "$DIR/config.env"; then
@@ -31,5 +31,6 @@ chmod +x "$DIR"/*.sh
 echo "== 3/3 Check =="
 python -c "import ast, sys; [ast.parse(open(f, encoding='utf-8').read()) for f in sys.argv[1:]]" "$DIR/phone_mcp.py" "$DIR/bridge.py"
 command -v adb >/dev/null && command -v ssh >/dev/null
+[ -f "$DIR/helper/phone-mcp-helper.jar" ] || echo "!! helper/phone-mcp-helper.jar is missing - everything works, but several times slower."
 echo
 echo "Done. Next: turn on Wireless debugging and run   bash $DIR/pair.sh"

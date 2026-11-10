@@ -234,6 +234,11 @@ def main():
             log("the relay went silent - reconnecting")
         except Exception as e:
             log(f"relay connection: {e}")
+            if "(4000 " in str(e):
+                # The relay keeps only the newest phone connection. Another bridge has taken over
+                # (start.sh was run again); reconnecting would just push it out again, forever.
+                log("another bridge took over - exiting")
+                return
         time.sleep(delay)
         delay = min(delay * 2, 30)
 
