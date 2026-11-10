@@ -21,7 +21,14 @@ bash ~/phone-mcp/set-relay.sh https://phone-mcp-relay.NAME.workers.dev
 bash ~/phone-mcp/start.sh
 ```
 
-To update an existing deployment under another name, pass it explicitly: `npx wrangler deploy --name my-name`.
+## Update
+
+Run `npx wrangler deploy` again from this folder (add `--name my-name` if you deployed it under another name).
+The URL stays the same; the phone reconnects within a few seconds. Updating needs no `wrangler login` if you
+are still logged in on that computer.
+
+Without a computer: in the Cloudflare dashboard open *Workers & Pages*, your Worker, *Edit code*, replace the
+content of `worker.js` with this folder's `worker.js` and press *Deploy*.
 
 ## How it works
 
@@ -33,6 +40,8 @@ To update an existing deployment under another name, pass it explicitly: `npx wr
 
 Each token maps to its own Durable Object, named by the SHA-256 of the token. The object holds the phone's
 WebSocket (with hibernation, so an idle connection costs nothing) and matches replies to requests by id.
+Requests go to the newest connection that is still open and still sending its keep-alive pings, so a leftover
+connection (after a network change, or a bridge that was killed) can never block the current one.
 Replies larger than 200,000 characters arrive in parts and are joined before they are returned.
 
 The Worker has no secrets and no storage. A request with the wrong token reaches an object with no phone attached

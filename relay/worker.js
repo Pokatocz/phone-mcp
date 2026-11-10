@@ -11,6 +11,8 @@
  */
 
 const TIMEOUT_MS = 150_000; // the slowest tool (shell) may take 120 s
+const SILENT_MS = 80_000;   // the phone pings every 25 s; a connection silent for longer is dead
+const OPEN = 1;             // WebSocket.readyState
 const FORWARD_HEADERS = ["accept", "content-type", "mcp-protocol-version", "mcp-session-id", "last-event-id", "user-agent"];
 const RETURN_HEADERS = ["content-type", "mcp-session-id", "allow", "cache-control"];
 const NULL_BODY = new Set([101, 204, 205, 304]);
@@ -58,13 +60,11 @@ export class PhoneBridge {
     if (request.headers.get("x-bridge-kind") === "phone") return this.acceptPhone(request);
 
     const path = request.headers.get("x-bridge-path") || "/mcp";
-    const sockets = this.ctx.getWebSockets();
-    if (sockets.length === 0) {
-      return path === "/health"
-        ? json(503, { ok: false, phone: "disconnected", relay: true })
-        : rpcError(503, "The phone is not connected to the relay (is start.sh running in Termux?)");
-    }
-    const ws = sockets[sockets.length - 1];
+    const notConnected = () => path === "/health"
+      ? json(503, { ok: false, phone: "disconnected", relay: true })
+      : rpcError(503, "The phone is not connected to the relay (is start.sh running in Termux?)");
+    const candidates = this.phoneSockets();
+    if (candidates.length === 0) return notConnected();
 
     const id = crypto.randomUUID();
     const headers = {};
@@ -82,13 +82,23 @@ export class PhoneBridge {
       this.pending.set(id, { resolve, timer, parts: [] });
     });
 
-    try {
-      ws.send(JSON.stringify({ id, method: request.method, path, headers, body }));
-    } catch {
+    // Newest live connection first. A connection that cannot take the message is closed and the
+    // next one is tried, so a dead leftover can never block the phone's current connection.
+    let sent = false;
+    for (const ws of candidates) {
+      try {
+        ws.send(JSON.stringify({ id, method: request.method, path, headers, body }));
+        sent = true;
+        break;
+      } catch {
+        try { ws.close(1011, "unusable"); } catch {}
+      }
+    }
+    if (!sent) {
       const p = this.pending.get(id);
       if (p) clearTimeout(p.timer);
       this.pending.delete(id);
-      return rpcError(503, "The connection to the phone was lost");
+      return notConnected();
     }
 
     let r;
@@ -105,6 +115,35 @@ export class PhoneBridge {
     return new Response(NULL_BODY.has(status) ? null : r.body || "", { status, headers: out });
   }
 
+  /**
+   * The phone's usable connections, newest first. getWebSockets() returns them in no particular
+   * order and can still list connections that are closing or whose other end has vanished, so
+   * each connection records when it was opened, and connections whose keep-alive pings stopped
+   * are left out.
+   */
+  phoneSockets() {
+    const now = Date.now();
+    const usable = [];
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws.readyState !== OPEN) continue;
+      let info = {};
+      try { info = ws.deserializeAttachment() || {}; } catch {}
+      const since = info.since || 0;
+      // The phone's pings are answered by Cloudflare itself while this object sleeps (that time is
+      // kept by the runtime) and by webSocketMessage while it is awake (kept in the attachment).
+      let pinged = null;
+      try { pinged = this.ctx.getWebSocketAutoResponseTimestamp(ws); } catch {}
+      const tracked = pinged !== null || Boolean(info.lastPing);
+      const lastSign = Math.max(since, pinged ? pinged.getTime() : 0, info.lastPing || 0);
+      if (tracked && now - lastSign > SILENT_MS) {
+        try { ws.close(1011, "silent"); } catch {}   // its pings stopped: the phone is gone
+        continue;
+      }
+      usable.push({ ws, since });
+    }
+    return usable.sort((a, b) => b.since - a.since).map((x) => x.ws);
+  }
+
   acceptPhone(request) {
     if ((request.headers.get("upgrade") || "").toLowerCase() !== "websocket") {
       return new Response("Expected WebSocket", { status: 426 });
@@ -115,12 +154,17 @@ export class PhoneBridge {
     }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
+    pair[1].serializeAttachment({ since: Date.now() });
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
 
   async webSocketMessage(ws, message) {
     if (typeof message !== "string") return;
     if (message === "ping") {
+      try {
+        const info = ws.deserializeAttachment() || {};
+        ws.serializeAttachment({ ...info, lastPing: Date.now() });
+      } catch {}
       ws.send("pong");
       return;
     }
@@ -144,7 +188,9 @@ export class PhoneBridge {
   }
 
   async webSocketClose(ws, code, reason) {
-    try { ws.close(code, reason); } catch {}
+    // Finish the closing handshake. 1005/1006/1015 only describe a close and cannot be sent back.
+    const valid = (code >= 1000 && code <= 1003) || (code >= 1007 && code <= 1014) || (code >= 3000 && code <= 4999);
+    try { ws.close(valid ? code : 1000, valid ? reason : ""); } catch {}
   }
 
   async webSocketError(ws) {
